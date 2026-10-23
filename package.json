@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Sistem pencatatan dan penagihan air Griya Asri Gadingan 3",
+  "description": "Sistem pencatatan dan penagihan air Blok Alamanda Griya Asri Gadingan 3",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",

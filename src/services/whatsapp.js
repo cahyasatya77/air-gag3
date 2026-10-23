@@ -16,6 +16,6 @@ export function buildMessage(b, link) {
   else lines.push(`- Meter ${b.meter_awal ?? '?'} → ${b.meter_akhir ?? '?'} (${b.billed_m3} m³)`);
   lines.push(`- Total: ${rp(b.amount)}`);
   if (b.paid > 0) lines.push(`- Sudah dibayar: ${rp(b.paid)}`);
-  lines.push(b.outstanding > 0 ? `- Sisa yang harus dibayar: ${rp(b.outstanding)}` : '- Status: LUNAS', '', `Rincian (PDF): ${link}`, '', 'Terima kasih. Pengurus Air GAG3');
+  lines.push(b.outstanding > 0 ? `- Sisa yang harus dibayar: ${rp(b.outstanding)}` : '- Status: LUNAS', '', `Rincian (PDF): ${link}`, '', 'Terima kasih. Pengurus Air Alamanda GAG3');
   return lines.join('\n');
 }
