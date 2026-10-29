@@ -69,7 +69,7 @@ const confirmCancel = async () => {
           <div>
             <p class="font-semibold tabular-nums">{{ formatRupiah(p.amount) }}</p>
             <p class="text-xs text-gray-500">
-              {{ formatDate(p.paid_at) }}<span v-if="p.note"> · {{ p.note }}</span>
+              {{ formatDate(p.paid_at) }} · {{ p.method === 'transfer' ? 'Transfer' : 'Tunai' }}<span v-if="p.note"> · {{ p.note }}</span>
             </p>
           </div>
           <button

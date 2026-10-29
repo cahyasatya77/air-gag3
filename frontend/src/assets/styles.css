@@ -25,6 +25,29 @@
 }
 
 @layer components {
+  /* Isi teks kaya dari editor (notulen): Tailwind me-reset daftar, jadi diberi gaya lagi di sini */
+  .rich-content {
+    @apply text-sm leading-relaxed text-gray-700;
+  }
+  .rich-content p {
+    @apply my-2;
+  }
+  .rich-content ul {
+    @apply my-2 list-disc pl-5;
+  }
+  .rich-content ol {
+    @apply my-2 list-decimal pl-5;
+  }
+  .rich-content li {
+    @apply my-0.5;
+  }
+  .rich-content a {
+    @apply text-brand-700 underline;
+  }
+  .rich-content blockquote {
+    @apply my-2 border-l-4 border-gray-200 pl-3 text-gray-600;
+  }
+
   .card {
     @apply rounded-xl border border-gray-200 bg-white shadow-xs;
   }

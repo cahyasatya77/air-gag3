@@ -1,30 +1,45 @@
 import { query, tx } from '../db/pool.js';
 import { normalizePhone, buildMessage } from '../services/whatsapp.js';
+import { bankInfo } from '../services/bank.js';
 import { audit } from '../services/audit.js';
+import { OPS_ROLES, PERIOD_ROLES, isOps } from '../services/roles.js';
 import {
-  HttpError, assertPeriod, beforeStart, generatePeriod, syncFlatBills, calcAmount, tariffFor, recordReading, setMeterAwal, applyAdjustment, recordPayment,
+  HttpError, assertPeriod, createPeriod, generatePeriod, syncFlatBills, calcAmount, tariffFor, recordReading, setMeterAwal, applyAdjustment, recordPayment,
 } from '../services/billing.js';
 
 export const BILL_SELECT = `
   SELECT b.*, h.no_rumah, h.owner_name, h.status AS house_status, h.phone, h.user_id AS house_user_id,
-    COALESCE(p.paid,0)::int AS paid, (b.amount - COALESCE(p.paid,0))::int AS outstanding,
-    COALESCE(a.list,'[]'::json) AS adjustments
+    COALESCE(p.paid,0) AS paid, (b.amount - COALESCE(p.paid,0)) AS outstanding
   FROM bills b
   JOIN houses h ON h.id=b.house_id
-  LEFT JOIN (SELECT bill_id, SUM(amount) AS paid FROM payments GROUP BY bill_id) p ON p.bill_id=b.id
-  LEFT JOIN (SELECT bill_id, json_agg(json_build_object('type',type,'override_m3',override_m3,
-      'override_amount',override_amount,'reason',reason,'created_at',created_at) ORDER BY id) AS list
-    FROM adjustments GROUP BY bill_id) a ON a.bill_id=b.id`;
+  LEFT JOIN (SELECT bill_id, SUM(amount) AS paid FROM payments GROUP BY bill_id) p ON p.bill_id=b.id`;
+
+/** Tempelkan daftar justifikasi (adjustments) ke setiap tagihan hasil BILL_SELECT. */
+export async function withAdjustments(rows) {
+  if (!rows.length) return rows;
+  const { rows: adj } = await query(
+    `SELECT bill_id, type, override_m3, override_amount, reason, created_at FROM adjustments WHERE bill_id = ANY($1) ORDER BY id`,
+    [rows.map((r) => r.id)]
+  );
+  return rows.map((r) => ({ ...r, adjustments: adj.filter((x) => x.bill_id === r.id).map(({ bill_id, ...x }) => x) }));
+}
 
 const num = { type: ['number'], minimum: 0 };
 
 export default async function (app) {
-  const staff = app.auth('pengurus');
+  const staff = app.auth(...OPS_ROLES);
 
-  // Daftar tagihan satu periode (otomatis dibuat bila belum ada)
+  // Periode yang sudah dibuat pengurus (terbaru di atas)
+  app.get('/periods', { preHandler: staff }, async () => {
+    const { rows } = await query('SELECT period FROM periods ORDER BY period DESC');
+    return rows.map((r) => r.period);
+  });
+
+  // Daftar tagihan satu periode. Periode yang belum dibuat manual tidak berisi apa pun.
   app.get('/periods/:period/bills', { preHandler: staff }, async (req) => {
     const period = assertPeriod(req.params.period);
-    if (beforeStart(period)) return [];
+    const { rowCount } = await query('SELECT 1 FROM periods WHERE period=$1', [period]);
+    if (!rowCount) return [];
     const { rows: [c] } = await query(
       `SELECT (SELECT COUNT(*) FROM houses WHERE status<>'nonaktif') AS houses,
               (SELECT COUNT(*) FROM bills b JOIN houses h ON h.id=b.house_id
@@ -32,14 +47,15 @@ export default async function (app) {
     if (Number(c.bills) < Number(c.houses)) await tx((db) => generatePeriod(db, period));
     else await tx((db) => syncFlatBills(db, { period }));
     const { rows } = await query(`${BILL_SELECT} WHERE b.period=$1 ORDER BY h.sort_no`, [period]);
-    return rows;
+    return withAdjustments(rows);
   });
 
-  app.post('/periods/:period/generate', { preHandler: staff }, async (req) => {
+  // Buat periode baru secara manual (tagihan dibuat untuk semua rumah aktif)
+  app.post('/periods/:period/generate', { preHandler: app.auth(...PERIOD_ROLES) }, async (req, reply) => {
     const period = assertPeriod(req.params.period);
-    const created = await tx((db) => generatePeriod(db, period));
-    await audit(req, 'generate_periode', 'period', period, null, { created });
-    return { created };
+    const created = await tx((db) => createPeriod(db, period, req.user.id));
+    await audit(req, 'buat_periode', 'period', period, null, { created });
+    return reply.code(201).send({ period, created });
   });
 
   app.get('/bills/:id', { preHandler: app.auth() }, async (req) => {
@@ -50,12 +66,12 @@ export default async function (app) {
 
   app.put('/bills/:id/reading', {
     preHandler: staff,
-    schema: { body: { type: 'object', required: ['meter_akhir'], properties: { meter_akhir: num } } },
+    schema: { body: { type: 'object', required: ['meter_akhir'], properties: { meter_akhir: num, update: { type: 'boolean' } } } },
   }, async (req) => {
     const id = Number(req.params.id);
     const r = await tx(async (db) => {
-      const out = await recordReading(db, { billId: id, meterAkhir: req.body.meter_akhir, userId: req.user.id });
-      await audit(req, 'catat_meter', 'bill', id, pick(out.before), pick(out.after), db);
+      const out = await recordReading(db, { billId: id, meterAkhir: req.body.meter_akhir, userId: req.user.id, update: req.body.update });
+      await audit(req, out.before.meter_akhir !== null ? 'ubah_meter' : 'catat_meter', 'bill', id, pick(out.before), pick(out.after), db);
       return out.after;
     });
     return r;
@@ -101,11 +117,11 @@ export default async function (app) {
 
   app.post('/bills/:id/payments', {
     preHandler: staff,
-    schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'integer', minimum: 1 }, paid_at: { type: 'string', format: 'date' }, note: { type: 'string' } } } },
+    schema: { body: { type: 'object', required: ['amount'], properties: { amount: { type: 'integer', minimum: 1 }, paid_at: { type: 'string', format: 'date' }, note: { type: 'string' }, method: { type: 'string', enum: ['tunai', 'transfer'] } } } },
   }, async (req, reply) => {
     const id = Number(req.params.id);
     const pay = await tx(async (db) => {
-      const p = await recordPayment(db, { billId: id, amount: req.body.amount, paidAt: req.body.paid_at, note: req.body.note, userId: req.user.id });
+      const p = await recordPayment(db, { billId: id, amount: req.body.amount, paidAt: req.body.paid_at, note: req.body.note, method: req.body.method, userId: req.user.id });
       await audit(req, 'bayar', 'payment', p.id, null, p, db);
       return p;
     });
@@ -142,15 +158,16 @@ export default async function (app) {
       const tariff = await tariffFor(db, b.period);
       const usage = hasMeter ? b.meter_akhir - b.meter_awal : null;
       const amount = b.amount ?? calcAmount(usage, tariff);
-      const { rows } = await db.query(
-        `INSERT INTO bills (house_id,period,meter_awal,meter_akhir,usage_m3,billed_m3,amount,tariff_id,recorded_by,recorded_at)
-         VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,now()) ON CONFLICT (house_id,period) DO UPDATE SET
-           meter_awal=EXCLUDED.meter_awal, meter_akhir=EXCLUDED.meter_akhir, usage_m3=EXCLUDED.usage_m3, billed_m3=EXCLUDED.billed_m3,
-           amount=EXCLUDED.amount, tariff_id=EXCLUDED.tariff_id, recorded_by=EXCLUDED.recorded_by, recorded_at=now()
-           WHERE bills.recorded_at IS NULL RETURNING *`,
-        [b.house_id, b.period, hasMeter ? b.meter_awal : null, hasMeter ? b.meter_akhir : null, usage, amount, tariff.id, req.user.id]
-      );
-      if (!rows[0]) throw new HttpError(409, 'Tagihan periode ini sudah ada untuk rumah tersebut');
+      const ex = (await db.query('SELECT id, recorded_at FROM bills WHERE house_id=$1 AND period=$2 FOR UPDATE', [b.house_id, b.period])).rows[0];
+      if (ex?.recorded_at) throw new HttpError(409, 'Tagihan periode ini sudah ada untuk rumah tersebut');
+      const vals = [hasMeter ? b.meter_awal : null, hasMeter ? b.meter_akhir : null, usage, amount, tariff.id, req.user.id];
+      const { rows } = ex
+        ? await db.query(
+          `UPDATE bills SET meter_awal=$2, meter_akhir=$3, usage_m3=$4, billed_m3=$4, amount=$5, tariff_id=$6, recorded_by=$7, recorded_at=now()
+           WHERE id=$1 RETURNING *`, [ex.id, ...vals])
+        : await db.query(
+          `INSERT INTO bills (house_id,period,meter_awal,meter_akhir,usage_m3,billed_m3,amount,tariff_id,recorded_by,recorded_at)
+           VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,now()) RETURNING *`, [b.house_id, b.period, ...vals]);
       await db.query(`INSERT INTO adjustments (bill_id,type,override_amount,reason,created_by) VALUES ($1,'lainnya',$2,$3,$4)`,
         [rows[0].id, amount, `Tunggakan lama diinput manual: ${b.note.trim()}`, req.user.id]);
       await audit(req, 'tambah_tunggakan', 'bill', rows[0].id, null, { ...pick(rows[0]), note: b.note }, db);
@@ -167,31 +184,31 @@ export default async function (app) {
     const token = app.jwt.sign({ scope: 'invoice', bill: bill.id }, { expiresIn: '14d' });
     const base = (process.env.PUBLIC_URL || `${req.protocol}://${req.headers.host}`).replace(/[/]$/, '');
     const link = `${base}/api/share/invoice.pdf?t=${token}`;
-    const message = buildMessage(bill, link);
+    const message = buildMessage(bill, link, await bankInfo());
     await audit(req, 'kirim_wa', 'bill', bill.id, null, { rumah: bill.no_rumah, period: bill.period });
     return { wa_url: `https://wa.me/${normalizePhone(bill.phone)}?text=${encodeURIComponent(message)}`, message, link };
   });
 
-  // Rekap piutang (tagihan belum lunas) per rumah
+  // Rekap piutang (tagihan belum lunas) per rumah: tagihan sudah tercatat (meteran diisi / flat / justifikasi) dan belum terbayar penuh,
+  // pada periode mana pun yang sudah dibuat.
   app.get('/receivables', { preHandler: staff }, async () => {
     const { rows } = await query(
       `SELECT h.id AS house_id, h.no_rumah, h.owner_name, COUNT(*)::int AS jumlah_bulan,
-         SUM(b.amount - COALESCE(p.paid,0))::int AS total, array_agg(b.period ORDER BY b.period) AS periods
+         SUM(b.amount - COALESCE(p.paid,0))::int AS total, GROUP_CONCAT(b.period ORDER BY b.period) AS periods
        FROM bills b JOIN houses h ON h.id=b.house_id
        LEFT JOIN (SELECT bill_id, SUM(amount) AS paid FROM payments GROUP BY bill_id) p ON p.bill_id=b.id
        WHERE b.recorded_at IS NOT NULL AND b.amount > COALESCE(p.paid,0)
-         AND b.period <= to_char(now(),'YYYY-MM')
        GROUP BY h.id ORDER BY h.sort_no`
     );
-    return rows;
+    return rows.map((r) => ({ ...r, periods: String(r.periods).split(',') }));
   });
 
   // Pemilik rumah: riwayat tagihan & pembayaran miliknya
   app.get('/my/bills', { preHandler: app.auth('pemilik') }, async (req) => {
-    const { rows } = await query(
+    const rows = await withAdjustments((await query(
       `${BILL_SELECT} WHERE h.user_id=$1 AND b.recorded_at IS NOT NULL ORDER BY b.period DESC, h.sort_no`,
       [req.user.id]
-    );
+    )).rows);
     const ids = rows.map((r) => r.id);
     const pays = ids.length ? (await query('SELECT * FROM payments WHERE bill_id=ANY($1) ORDER BY id', [ids])).rows : [];
     return rows.map((r) => ({ ...r, payments: pays.filter((p) => p.bill_id === r.id) }));
@@ -205,9 +222,8 @@ const pick = (b) => b && ({
 
 export async function loadBillFor(req, id) {
   const { rows } = await query(`${BILL_SELECT} WHERE b.id=$1`, [id]);
-  const bill = rows[0];
+  const bill = (await withAdjustments(rows))[0];
   if (!bill) throw new HttpError(404, 'Tagihan tidak ditemukan');
-  const staff = req.user.roles.some((r) => r === 'administrator' || r === 'pengurus');
-  if (!staff && bill.house_user_id !== req.user.id) throw new HttpError(403, 'Tidak punya akses');
+  if (!isOps(req.user) &&bill.house_user_id !== req.user.id) throw new HttpError(403, 'Tidak punya akses');
   return bill;
 }

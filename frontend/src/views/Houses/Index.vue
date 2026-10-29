@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Plus, Search, SquarePen } from '@lucide/vue'
+import { FileText, Plus, Search, SquarePen } from '@lucide/vue'
 import { masterService } from '@/services/master'
 import { errorMessage } from '@/services/api'
 import { useNotify } from '@/composables/useNotify'
@@ -50,6 +50,13 @@ const rows = computed(() => {
       (!q || `${h.no_rumah} ${h.owner_name} ${h.phone}`.toLowerCase().includes(q)),
   )
 })
+
+const reportUrl = computed(() => 
+  masterService.housesReportUrl({
+    q: search.value.trim(),
+    status: statusFilter.value,
+  }),
+);
 
 const owners = computed(() => users.value.filter((u) => u.roles.includes('pemilik')))
 
@@ -119,6 +126,9 @@ const submit = async () => {
         <option value="nonaktif">Nonaktif</option>
         <option value="tidak_pakai">Flat</option>
       </select>
+      <a :href="reportUrl" target="_blank" class="btn btn-ghost">
+        <FileText class="h-4 w-4" aria-hidden="true" /> PDF
+      </a>
       <button type="button" class="btn btn-primary" @click="openForm()">
         <Plus class="h-4 w-4" aria-hidden="true" /> Rumah
       </button>

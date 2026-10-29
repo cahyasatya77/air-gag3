@@ -61,7 +61,7 @@ await tx(async (db) => {
       await db.query(`INSERT INTO payments (bill_id,amount,paid_at,note) VALUES ($1,$2,$3,'Riwayat impor Excel (dianggap lunas)')`, [b.rows[0].id, amount, paidAt]);
     }
   }
-  await db.query(`INSERT INTO audit_logs (username,action,entity,after) VALUES ('sistem','impor_riwayat','bill',$1)`, [JSON.stringify({ imported, skipped: skipped.length })]);
+  await db.query(`INSERT INTO audit_logs (username,action,entity,new_data) VALUES ('sistem','impor_riwayat','bill',$1)`, [JSON.stringify({ imported, skipped: skipped.length })]);
 });
 console.log(`${imported} tagihan riwayat diimpor (A${FIRST}-A${LAST}).`);
 if (skipped.length) console.log('Dilewati:\n  ' + skipped.join('\n  '));

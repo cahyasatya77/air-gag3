@@ -53,7 +53,7 @@ const totals = computed(() => ({
   <div class="space-y-5">
     <PageHeader
       :title="TITLES[fund]"
-      :subtitle="`Rincian per bulan tahun ${year}: kas masuk (otomatis dari pembayaran tagihan) dan pengeluaran.`"
+      :subtitle="`Rincian per bulan tahun ${year}: kas masuk (pembayaran tagihan dan pemasukan lain) dan pengeluaran.`"
     >
       <div class="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white p-1">
         <button
@@ -94,7 +94,7 @@ const totals = computed(() => ({
           <button
             type="button"
             :aria-expanded="!!openMonths[m.bulan]"
-            class="grid w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 px-4 py-3 text-left hover:bg-gray-50 sm:grid-cols-[1fr_9rem_9rem_9rem]"
+            class="grid w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 px-4 py-3 text-left hover:bg-gray-50 sm:grid-cols-[1fr_9rem_9rem]"
             @click="toggle(m.bulan)"
           >
             <span class="flex items-center gap-2 font-semibold text-gray-900">
@@ -113,10 +113,6 @@ const totals = computed(() => ({
               <span class="mr-1 text-xs font-normal text-gray-400">keluar</span
               >{{ formatRupiah(m.keluar) }}
             </span>
-            <span class="hidden text-right text-sm font-bold tabular-nums sm:block">
-              <span class="mr-1 text-xs font-normal text-gray-400">saldo</span
-              >{{ formatRupiah(m.saldo) }}
-            </span>
           </button>
 
           <div v-show="openMonths[m.bulan]" class="space-y-3 bg-gray-50/60 px-4 py-3 pl-10 text-sm">
@@ -125,8 +121,27 @@ const totals = computed(() => ({
                 Kas masuk dari <b>{{ m.jumlah_bayar }}</b> pembayaran tagihan
               </span>
               <span class="font-semibold text-green-700 tabular-nums">{{
-                formatRupiah(m.masuk)
+                formatRupiah(m.masuk_pembayaran)
               }}</span>
+            </div>
+
+            <div v-if="m.incomes.length">
+              <p class="mb-1 text-xs font-bold tracking-wider text-gray-500 uppercase">
+                Pemasukan lain
+              </p>
+              <ul class="divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
+                <li v-for="e in m.incomes" :key="e.id" class="flex justify-between gap-3 px-3 py-2">
+                  <span>
+                    <span class="text-xs text-gray-500">{{ formatDate(e.entry_date) }}</span>
+                    <span v-if="e.category" class="badge badge-gray ml-2">{{ e.category }}</span>
+                    <br />
+                    {{ e.description }}
+                  </span>
+                  <span class="shrink-0 font-semibold text-green-700 tabular-nums">
+                    {{ formatRupiah(e.amount) }}
+                  </span>
+                </li>
+              </ul>
             </div>
 
             <div>
@@ -154,11 +169,6 @@ const totals = computed(() => ({
                   </span>
                 </li>
               </ul>
-            </div>
-
-            <div class="flex justify-between border-t border-gray-200 pt-2 font-semibold sm:hidden">
-              <span>Saldo akhir bulan</span>
-              <span class="tabular-nums">{{ formatRupiah(m.saldo) }}</span>
             </div>
           </div>
         </section>

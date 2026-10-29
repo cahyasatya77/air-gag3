@@ -12,7 +12,7 @@ await tx(async (db) => {
   await db.query(`UPDATE houses SET status='nonaktif' WHERE no_rumah = ANY($1)`, [DICOPOT]);
   await db.query(`UPDATE houses SET status='normal' WHERE sort_no BETWEEN $1 AND $2 AND status='tidak_pakai' AND no_rumah <> ALL($3)`, [FIRST, LAST, FLAT]);
   // buang tagihan kosong (belum dicatat) milik rumah nonaktif
-  await db.query(`DELETE FROM bills b USING houses h WHERE h.id=b.house_id AND h.status='nonaktif' AND b.recorded_at IS NULL AND b.meter_akhir IS NULL
+  await db.query(`DELETE b FROM bills b JOIN houses h ON h.id=b.house_id WHERE h.status='nonaktif' AND b.recorded_at IS NULL AND b.meter_akhir IS NULL
     AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.bill_id=b.id)`);
 });
 const { rows } = await pool.query('SELECT status, COUNT(*)::int n FROM houses GROUP BY status ORDER BY status');

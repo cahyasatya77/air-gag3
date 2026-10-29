@@ -10,13 +10,13 @@ const open = defineModel({ type: Boolean, default: false })
 const props = defineProps({ bill: { type: Object, default: null } })
 const emit = defineEmits(['saved'])
 
-const form = ref({ amount: 0, paid_at: todayISO(), note: '' })
+const form = ref({ amount: 0, paid_at: todayISO(), method: 'tunai', note: '' })
 const saving = ref(false)
 const error = ref('')
 
 watch(open, (isOpen) => {
   if (isOpen && props.bill) {
-    form.value = { amount: props.bill.outstanding, paid_at: todayISO(), note: '' }
+    form.value = { amount: props.bill.outstanding, paid_at: todayISO(), method: 'tunai', note: '' }
     error.value = ''
   }
 })
@@ -28,6 +28,7 @@ const submit = async () => {
     await billingService.pay(props.bill.id, {
       amount: Number(form.value.amount),
       paid_at: form.value.paid_at || undefined,
+      method: form.value.method,
       note: form.value.note,
     })
     open.value = false
@@ -89,6 +90,14 @@ const submit = async () => {
       <div>
         <FormLabel for="pay-date">Tanggal bayar</FormLabel>
         <input id="pay-date" v-model="form.paid_at" type="date" class="input" />
+      </div>
+
+      <div>
+        <FormLabel for="pay-method" required>Cara bayar</FormLabel>
+        <select id="pay-method" v-model="form.method" class="input" required>
+          <option value="tunai">Tunai (Cash)</option>
+          <option value="transfer">Transfer (TF)</option>
+        </select>
       </div>
 
       <div>

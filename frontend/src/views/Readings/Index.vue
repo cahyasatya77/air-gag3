@@ -9,6 +9,7 @@ import {
   Scale,
   Check,
   Loader2,
+  Pencil,
 } from '@lucide/vue'
 import { billingService } from '@/services/billing'
 import { masterService } from '@/services/master'
@@ -19,6 +20,7 @@ import { calcAmount, formatNumber, formatRupiah, periodLabel } from '@/utils/for
 import Alert from '@/components/Alert.vue'
 import BillStatusBadge from '@/components/BillStatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import AppModal from '@/components/AppModal.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import PeriodPicker from '@/components/PeriodPicker.vue'
 import StatCard from '@/components/StatCard.vue'
@@ -26,7 +28,7 @@ import PaymentModal from './components/PaymentModal.vue'
 import AdjustmentModal from './components/AdjustmentModal.vue'
 import PaymentHistoryModal from './components/PaymentHistoryModal.vue'
 
-const { period } = usePeriod()
+const { period, loadPeriods } = usePeriod()
 const { sucMsg, errMsg, ok, fail } = useNotify()
 
 const bills = ref([])
@@ -38,6 +40,9 @@ const drafts = reactive({}) // id -> isi kolom meter akhir
 const awalDrafts = reactive({}) // id -> isi kolom meter awal (bila kosong)
 const savingId = ref(null)
 const savedId = ref(null)
+const editingId = ref(null) // baris yang meter akhirnya sedang diubah (sudah dikonfirmasi)
+const confirmBill = ref(null)
+const confirmOpen = ref(false)
 
 const payBill = ref(null)
 const payOpen = ref(false)
@@ -52,7 +57,8 @@ const tariff = computed(() => tariffs.value.find((t) => t.effective_from <= peri
 const load = async (silent = false) => {
   if (!silent) loading.value = true
   try {
-    bills.value = await billingService.periodBills(period.value)
+    bills.value = period.value ? await billingService.periodBills(period.value) : []
+    editingId.value = null
     bills.value.forEach((b) => {
       drafts[b.id] = b.meter_akhir ?? ''
       awalDrafts[b.id] = ''
@@ -69,6 +75,11 @@ onMounted(async () => {
     tariffs.value = await masterService.tariffs()
   } catch {
     /* pratinjau nominal opsional */
+  }
+  try {
+    await loadPeriods()
+  } catch (e) {
+    fail(e, 'Gagal memuat daftar periode.')
   }
   load()
 })
@@ -114,9 +125,29 @@ const preview = (b) => {
   return { usage, amount: calcAmount(usage, tariff.value) }
 }
 
+// Meter akhir yang sudah tercatat terkunci; mengubahnya wajib lewat tombol Update + konfirmasi.
+const isRecorded = (b) => b.meter_akhir != null
+const isLocked = (b) => isRecorded(b) && editingId.value !== b.id
+
+const askUpdate = (b) => {
+  confirmBill.value = b
+  confirmOpen.value = true
+}
+const confirmUpdate = async () => {
+  const b = confirmBill.value
+  confirmOpen.value = false
+  editingId.value = b.id
+  await nextTick()
+  document.querySelector(`[data-reading="${b.id}"]`)?.focus()
+}
+const cancelEdit = (b) => {
+  editingId.value = null
+  drafts[b.id] = b.meter_akhir ?? ''
+}
+
 const focusNext = async (id) => {
   await nextTick()
-  const ids = rows.value.filter((b) => !b.flat && b.paid === 0).map((b) => b.id)
+  const ids = rows.value.filter((b) => !b.flat && b.paid === 0 && (!isRecorded(b) || b.id === id)).map((b) => b.id)
   const next = ids[ids.indexOf(id) + 1]
   if (next) document.querySelector(`[data-reading="${next}"]`)?.focus()
 }
@@ -126,7 +157,7 @@ const saveReading = async (b) => {
   if (raw === '' || raw === null || Number(raw) === b.meter_akhir || savingId.value === b.id) return
   savingId.value = b.id
   try {
-    await billingService.saveReading(b.id, Number(raw))
+    await billingService.saveReading(b.id, Number(raw), editingId.value === b.id)
     savedId.value = b.id
     setTimeout(() => (savedId.value = null), 1500)
     await load(true)
@@ -144,7 +175,17 @@ const saveReading = async (b) => {
   }
 }
 
+const saveEdit = async (b) => {
+  if (Number(drafts[b.id]) === b.meter_akhir) return cancelEdit(b)
+  await saveReading(b)
+}
+
+const onBlur = (b) => {
+  if (editingId.value !== b.id) saveReading(b) // mode update disimpan lewat tombol/Enter, bukan blur
+}
+
 const onEnter = async (b) => {
+  if (editingId.value === b.id) return saveEdit(b)
   if (await saveReading(b)) focusNext(b.id)
   else if (Number(drafts[b.id]) === b.meter_akhir) focusNext(b.id)
 }
@@ -194,9 +235,17 @@ const sendWhatsApp = async (b) => {
   <div class="space-y-5">
     <PageHeader
       title="Pencatatan Meteran"
-      :subtitle="`Pemakaian bulan ${periodLabel(period)} · meter akhir diisi saat pencatatan tanggal 5 bulan berikutnya`"
+      :subtitle="
+        period
+          ? `Pemakaian bulan ${periodLabel(period)} · meter akhir diisi saat pencatatan tanggal 5 bulan berikutnya`
+          : 'Belum ada periode'
+      "
     >
-      <PeriodPicker v-model="period" />
+      <PeriodPicker
+        v-model="period"
+        @created="(p) => ok(`Periode ${periodLabel(p)} dibuat.`)"
+        @error="fail"
+      />
       <button
         type="button"
         class="btn btn-ghost"
@@ -206,7 +255,12 @@ const sendWhatsApp = async (b) => {
       >
         <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" aria-hidden="true" />
       </button>
-      <a :href="billingService.periodReportUrl(period)" target="_blank" class="btn btn-ghost">
+      <a
+        v-if="period"
+        :href="billingService.periodReportUrl(period)"
+        target="_blank"
+        class="btn btn-ghost"
+      >
         <FileDown class="h-4 w-4" aria-hidden="true" /> PDF laporan
       </a>
     </PageHeader>
@@ -272,6 +326,10 @@ const sendWhatsApp = async (b) => {
 
     <div class="card overflow-hidden">
       <EmptyState v-if="loading && !bills.length" loading />
+      <EmptyState
+        v-else-if="!period"
+        message="Belum ada periode. Periode dibuat oleh pengurus."
+      />
       <EmptyState v-else-if="!rows.length" message="Tidak ada rumah yang cocok." />
 
       <table v-else class="block w-full md:table">
@@ -345,13 +403,37 @@ const sendWhatsApp = async (b) => {
                   step="any"
                   min="0"
                   inputmode="decimal"
-                  :disabled="b.paid > 0 || b.meter_awal == null"
+                  :disabled="b.paid > 0 || b.meter_awal == null || isLocked(b)"
                   :placeholder="b.meter_awal == null ? 'isi awal dulu' : 'isi meter'"
                   aria-label="Meter akhir"
                   class="input w-28 text-right tabular-nums"
+                  :class="{ 'bg-gray-50': isLocked(b) }"
                   @keydown.enter.prevent="onEnter(b)"
-                  @blur="saveReading(b)"
+                  @keydown.esc="editingId === b.id && cancelEdit(b)"
+                  @blur="onBlur(b)"
                 />
+                <button
+                  v-if="isLocked(b) && b.paid === 0"
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  title="Ubah meter akhir"
+                  @click="askUpdate(b)"
+                >
+                  <Pencil class="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                <template v-else-if="editingId === b.id">
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    :disabled="savingId === b.id"
+                    @click="saveEdit(b)"
+                  >
+                    Simpan
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="cancelEdit(b)">
+                    Batal
+                  </button>
+                </template>
               </div>
             </td>
 
@@ -444,6 +526,28 @@ const sendWhatsApp = async (b) => {
         </tbody>
       </table>
     </div>
+
+    <AppModal
+      v-model="confirmOpen"
+      size="sm"
+      title="Ubah meter akhir?"
+      :subtitle="confirmBill ? `Rumah ${confirmBill.no_rumah} · ${confirmBill.owner_name}` : ''"
+    >
+      <div v-if="confirmBill" class="space-y-3 text-sm text-gray-700">
+        <p>
+          Meter akhir yang sudah tercatat:
+          <b class="tabular-nums">{{ formatNumber(confirmBill.meter_akhir) }}</b>
+        </p>
+        <p>
+          Tagihan akan dihitung ulang dan perubahan tercatat di audit log.
+          <b>Yakin mengubah data ini?</b>
+        </p>
+      </div>
+      <template #footer>
+        <button type="button" class="btn btn-ghost" @click="confirmOpen = false">Batal</button>
+        <button type="button" class="btn btn-primary" @click="confirmUpdate">Ya, ubah</button>
+      </template>
+    </AppModal>
 
     <PaymentModal v-model="payOpen" :bill="payBill" @saved="onSaved" />
     <PaymentHistoryModal v-model="histOpen" :bill="histBill" @saved="onSaved" />

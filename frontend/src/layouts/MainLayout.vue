@@ -19,6 +19,8 @@ import {
   Wallet,
   X,
   Building2,
+  Landmark,
+  NotebookText,
 } from '@lucide/vue'
 
 const auth = useAuthStore()
@@ -31,6 +33,8 @@ const appVersion = import.meta.env.VITE_APP_VERSION
 const ROLE_LABEL = {
   administrator: 'Administrator',
   pengurus: 'Pengurus',
+  pengurus_jimpitan: 'Pengurus Jimpitan',
+  pengurus_air: 'Pengurus Air',
   pemilik: 'Pemilik rumah',
 }
 
@@ -50,44 +54,43 @@ const menu = computed(() => {
   const groups = []
   if (auth.isPemilik) {
     groups.push({
-      title: auth.isStaff ? 'Rumah Saya' : '',
+      title: auth.isOps ? 'Rumah Saya' : '',
       items: [{ name: 'Tagihan Saya', path: '/tagihan-saya', icon: Receipt }],
     })
-    // Pemilik murni membaca laporan kas lewat grup transparansi; staf sudah punya di grup Keuangan
+    // Pemilik non-staf membaca laporan kas kedua dana lewat grup transparansi; staf sudah punya di grup Keuangan
     if (!auth.isStaff) groups.push({ title: 'Transparansi', items: [REPORT_MENU] })
   }
-  if (!auth.isStaff) return groups
-  const staffGroups = [
+  // Notulen pertemuan: dibaca semua pengguna login
+  const info = { title: 'Informasi', items: [{ name: 'Notulen', path: '/notulen', icon: NotebookText }] }
+  if (!auth.isOps) return [...groups, info]
+  const operasional = [
+    { name: 'Pencatatan Meteran', path: '/pencatatan', icon: ClipboardList },
+    { name: 'Tagihan Belum Lunas', path: '/tunggakan', icon: History },
+  ]
+  if (auth.isStaff) operasional.unshift({ name: 'Beranda', path: '/', icon: Home })
+
+  // Pengurus jimpitan/air hanya melihat kas & laporan dananya sendiri
+  const funds = [
+    { fund: 'jimpitan', kas: 'Kas Jimpitan', laporan: 'Laporan Jimpitan' },
+    { fund: 'air', kas: 'Kas Air', laporan: 'Laporan Air' },
+  ].filter((f) => auth.canFund(f.fund))
+  const keuangan = [
     {
-      title: 'Operasional',
-      items: [
-        { name: 'Beranda', path: '/', icon: Home },
-        { name: 'Pencatatan Meteran', path: '/pencatatan', icon: ClipboardList },
-        { name: 'Tagihan Belum Lunas', path: '/tunggakan', icon: History },
-      ],
-    },
-    {
-      title: 'Keuangan',
-      items: [
-        {
-          name: 'Kas',
-          icon: Wallet,
-          children: [
-            { name: 'Kas Jimpitan', path: '/kas/jimpitan' },
-            { name: 'Kas Air', path: '/kas/air' },
-          ],
-        },
-        {
-          name: 'Laporan Kas',
-          icon: FileText,
-          children: [
-            { name: 'Laporan Jimpitan', path: '/laporan/jimpitan' },
-            { name: 'Laporan Air', path: '/laporan/air' },
-          ],
-        },
-      ],
+      name: 'Kas',
+      icon: Wallet,
+      children: funds.map((f) => ({ name: f.kas, path: `/kas/${f.fund}` })),
     },
   ]
+  // Pemilik non-staf sudah punya laporan lengkap di grup Transparansi
+  if (auth.isStaff || !auth.isPemilik) {
+    keuangan.push({
+      name: 'Laporan Kas',
+      icon: FileText,
+      children: funds.map((f) => ({ name: f.laporan, path: `/laporan/${f.fund}` })),
+    })
+  }
+  const staffGroups = [{ title: 'Operasional', items: operasional }]
+  if (funds.length) staffGroups.push({ title: 'Keuangan', items: keuangan })
   if (auth.isAdmin) {
     staffGroups.push({
       title: 'Pengaturan',
@@ -95,11 +98,12 @@ const menu = computed(() => {
         { name: 'Data Rumah', path: '/rumah', icon: Building2 },
         { name: 'Pengguna', path: '/pengguna', icon: Users },
         { name: 'Tarif', path: '/tarif', icon: Settings2 },
+        { name: 'Rekening', path: '/rekening', icon: Landmark },
         { name: 'Audit Log', path: '/audit', icon: ScrollText },
       ],
     })
   }
-  return [...staffGroups, ...groups]
+  return [...staffGroups, ...groups, info]
 })
 
 const isActive = (path) => (path === '/' ? route.path === '/' : route.path.startsWith(path))

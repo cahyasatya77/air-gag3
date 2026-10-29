@@ -41,7 +41,7 @@ await tx(async (db) => {
 
   const adminPw = process.env.ADMIN_PASSWORD || crypto.randomBytes(6).toString('hex');
   const r = await db.query(
-    `INSERT INTO users (username,password_hash,name,roles) VALUES ('admin',$1,'Administrator',ARRAY['administrator'])
+    `INSERT INTO users (username,password_hash,name,roles) VALUES ('admin',$1,'Administrator','["administrator"]')
      ON CONFLICT (username) DO NOTHING`,
     [await bcrypt.hash(adminPw, 10)]
   );
@@ -49,11 +49,12 @@ await tx(async (db) => {
 
   for (const h of houses) {
     const sort = Number(h.no.replace(/\D/g, ''));
-    const { rows } = await db.query(
+    await db.query(
       `INSERT INTO houses (no_rumah,sort_no,owner_name,notes) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (no_rumah) DO UPDATE SET owner_name=EXCLUDED.owner_name RETURNING id`,
+       ON DUPLICATE KEY UPDATE owner_name=VALUES(owner_name)`,
       [h.no, sort, h.owner, h.note]
     );
+    const { rows } = await db.query('SELECT id FROM houses WHERE no_rumah=$1', [h.no]);
     if (h.meter !== null) {
       await db.query(
         `INSERT INTO bills (house_id,period,meter_awal) VALUES ($1,$2,$3) ON CONFLICT (house_id,period) DO NOTHING`,

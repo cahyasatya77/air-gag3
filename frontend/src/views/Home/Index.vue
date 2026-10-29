@@ -14,8 +14,8 @@ import StatCard from '@/components/StatCard.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
-const { period } = usePeriod()
-const { sucMsg, errMsg, fail } = useNotify()
+const { period, loadPeriods } = usePeriod()
+const { sucMsg, errMsg, ok, fail } = useNotify()
 
 const bills = ref([])
 const cash = ref(null)
@@ -26,7 +26,7 @@ const load = async () => {
   loading.value = true
   try {
     ;[bills.value, cash.value, receivables.value] = await Promise.all([
-      billingService.periodBills(period.value),
+      period.value ? billingService.periodBills(period.value) : [],
       cashService.book(),
       billingService.receivables(),
     ])
@@ -36,7 +36,14 @@ const load = async () => {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(async () => {
+  try {
+    await loadPeriods()
+  } catch (e) {
+    fail(e, 'Gagal memuat daftar periode.')
+  }
+  load()
+})
 watch(period, load)
 
 const recorded = computed(() => bills.value.filter((b) => b.recorded_at).length)
@@ -59,9 +66,13 @@ const reminder = computed(() => {
   <div class="space-y-5">
     <PageHeader
       :title="`Halo, ${auth.displayName}`"
-      :subtitle="`Ringkasan pemakaian ${periodLabel(period)}`"
+      :subtitle="period ? `Ringkasan pemakaian ${periodLabel(period)}` : 'Belum ada periode'"
     >
-      <PeriodPicker v-model="period" />
+      <PeriodPicker
+        v-model="period"
+        @created="(p) => ok(`Periode ${periodLabel(p)} dibuat.`)"
+        @error="fail"
+      />
     </PageHeader>
 
     <Alert v-model:success="sucMsg" v-model:error="errMsg" />
@@ -123,7 +134,12 @@ const reminder = computed(() => {
         <RouterLink to="/kas" class="btn btn-ghost"
           ><Wallet class="h-4 w-4" aria-hidden="true" /> Buku kas</RouterLink
         >
-        <a :href="billingService.periodReportUrl(period)" target="_blank" class="btn btn-ghost">
+        <a
+          v-if="period"
+          :href="billingService.periodReportUrl(period)"
+          target="_blank"
+          class="btn btn-ghost"
+        >
           <FileDown class="h-4 w-4" aria-hidden="true" /> PDF laporan {{ periodLabel(period) }}
         </a>
       </div>
