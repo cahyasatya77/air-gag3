@@ -4,7 +4,10 @@ import { useAuthStore } from '@/stores/auth'
 const STAFF = ['pengurus'] // administrator otomatis boleh ke semua halaman
 const ADMIN_ONLY = ['administrator']
 const OWNER = ['pemilik']
-const STAFF_OWNER = ['pengurus', 'pemilik'] // laporan kas terbuka untuk pemilik (transparansi)
+const OPS = ['pengurus', 'pengurus_jimpitan', 'pengurus_air'] // pencatatan meteran & tagihan belum lunas
+// kas & laporan kas per dana; laporan juga terbuka untuk pemilik (transparansi)
+const CASH = { jimpitan: ['pengurus', 'pengurus_jimpitan'], air: ['pengurus', 'pengurus_air'] }
+const REPORT = { jimpitan: [...CASH.jimpitan, 'pemilik'], air: [...CASH.air, 'pemilik'] }
 
 const routes = [
   {
@@ -28,39 +31,39 @@ const routes = [
         path: 'pencatatan',
         name: 'Readings',
         component: () => import('@/views/Readings/Index.vue'),
-        meta: { title: 'Pencatatan Meteran', roles: STAFF },
+        meta: { title: 'Pencatatan Meteran', roles: OPS },
       },
       {
         path: 'tunggakan',
         name: 'Receivables',
         component: () => import('@/views/Receivables/Index.vue'),
-        meta: { title: 'Tagihan Belum Lunas', roles: STAFF },
+        meta: { title: 'Tagihan Belum Lunas', roles: OPS },
       },
       { path: 'kas', redirect: '/kas/jimpitan' },
       {
         path: 'kas/jimpitan',
         name: 'CashJimpitan',
         component: () => import('@/views/Cash/Index.vue'),
-        meta: { title: 'Kas Jimpitan', roles: STAFF, fund: 'jimpitan' },
+        meta: { title: 'Kas Jimpitan', roles: CASH.jimpitan, fund: 'jimpitan' },
       },
       {
         path: 'kas/air',
         name: 'CashAir',
         component: () => import('@/views/Cash/Index.vue'),
-        meta: { title: 'Kas Air', roles: STAFF, fund: 'air' },
+        meta: { title: 'Kas Air', roles: CASH.air, fund: 'air' },
       },
       { path: 'laporan', redirect: '/laporan/jimpitan' },
       {
         path: 'laporan/jimpitan',
         name: 'ReportJimpitan',
         component: () => import('@/views/Reports/Index.vue'),
-        meta: { title: 'Laporan Kas Jimpitan', roles: STAFF_OWNER, fund: 'jimpitan' },
+        meta: { title: 'Laporan Kas Jimpitan', roles: REPORT.jimpitan, fund: 'jimpitan' },
       },
       {
         path: 'laporan/air',
         name: 'ReportAir',
         component: () => import('@/views/Reports/Index.vue'),
-        meta: { title: 'Laporan Kas Air', roles: STAFF_OWNER, fund: 'air' },
+        meta: { title: 'Laporan Kas Air', roles: REPORT.air, fund: 'air' },
       },
       {
         path: 'rumah',
@@ -81,10 +84,40 @@ const routes = [
         meta: { title: 'Tarif', roles: ADMIN_ONLY },
       },
       {
+        path: 'rekening',
+        name: 'BankAccounts',
+        component: () => import('@/views/BankAccounts/Index.vue'),
+        meta: { title: 'Rekening', roles: ADMIN_ONLY },
+      },
+      {
         path: 'audit',
         name: 'Audit',
         component: () => import('@/views/Audit/Index.vue'),
         meta: { title: 'Audit Log', roles: ADMIN_ONLY },
+      },
+      {
+        path: 'notulen',
+        name: 'Notes',
+        component: () => import('@/views/Notes/Index.vue'),
+        meta: { title: 'Notulen' },
+      },
+      {
+        path: 'notulen/baru',
+        name: 'NoteCreate',
+        component: () => import('@/views/Notes/Form.vue'),
+        meta: { title: 'Notulen Baru', roles: STAFF },
+      },
+      {
+        path: 'notulen/:id',
+        name: 'NoteDetail',
+        component: () => import('@/views/Notes/Detail.vue'),
+        meta: { title: 'Notulen' },
+      },
+      {
+        path: 'notulen/:id/ubah',
+        name: 'NoteEdit',
+        component: () => import('@/views/Notes/Form.vue'),
+        meta: { title: 'Ubah Notulen', roles: STAFF },
       },
       {
         path: 'tagihan-saya',

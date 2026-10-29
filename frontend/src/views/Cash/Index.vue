@@ -52,18 +52,22 @@ onMounted(load)
 const saldo = computed(() => book.value?.saldo[fund])
 const entries = computed(() => book.value?.entries ?? [])
 
+// Pemasukan otomatis (dari pembayaran tagihan) punya payment_id; selain itu dicatat manual
+const isManual = (e) => !e.payment_id
 const describe = (e) =>
-  e.direction === 'in'
+  e.direction === 'in' && !isManual(e)
     ? `Kas masuk ${e.no_rumah || ''} · ${e.description}`.trim()
     : (e.category ? `${e.category}: ` : '') + e.description
 
-// ---- Pengeluaran ----
+// ---- Pemasukan / pengeluaran manual ----
+const kind = ref('out') // 'in' | 'out'
 const open = ref(false)
 const saving = ref(false)
 const error = ref('')
 const form = ref({})
 
-const openForm = () => {
+const openForm = (k) => {
+  kind.value = k
   form.value = { amount: '', entry_date: todayISO(), category: '', description: '' }
   error.value = ''
   open.value = true
@@ -73,9 +77,10 @@ const submit = async () => {
   saving.value = true
   error.value = ''
   try {
-    await cashService.addExpense({ ...form.value, fund, amount: Number(form.value.amount) })
+    const body = { ...form.value, fund, amount: Number(form.value.amount) }
+    await (kind.value === 'in' ? cashService.addIncome(body) : cashService.addExpense(body))
     open.value = false
-    ok('Pengeluaran dicatat.')
+    ok(kind.value === 'in' ? 'Pemasukan dicatat.' : 'Pengeluaran dicatat.')
     load()
   } catch (e) {
     error.value = errorMessage(e)
@@ -85,15 +90,19 @@ const submit = async () => {
 }
 
 const remove = async (e) => {
-  if (!confirm(`Hapus pengeluaran "${describe(e)}" ${formatRupiah(e.amount)}?`)) return
-  if (await run(() => cashService.deleteExpense(e.id), 'Pengeluaran dihapus.')) load()
+  const nama = e.direction === 'in' ? 'pemasukan' : 'pengeluaran'
+  if (!confirm(`Hapus ${nama} "${describe(e)}" ${formatRupiah(e.amount)}?`)) return
+  if (await run(() => cashService.deleteEntry(e.id), `${nama[0].toUpperCase()}${nama.slice(1)} dihapus.`)) load()
 }
 </script>
 
 <template>
   <div class="space-y-5">
     <PageHeader :title="info.title" :subtitle="info.subtitle">
-      <button type="button" class="btn btn-primary" @click="openForm">
+      <button type="button" class="btn btn-ghost" @click="openForm('in')">
+        <Plus class="h-4 w-4" aria-hidden="true" /> Catat pemasukan
+      </button>
+      <button type="button" class="btn btn-primary" @click="openForm('out')">
         <Plus class="h-4 w-4" aria-hidden="true" /> Catat pengeluaran
       </button>
     </PageHeader>
@@ -103,7 +112,7 @@ const remove = async (e) => {
     <div v-if="saldo" class="grid gap-3 md:grid-cols-3">
       <StatCard label="Saldo kas" :value="formatRupiah(saldo.saldo)" :icon="Wallet" />
       <StatCard
-        label="Kas masuk (otomatis dari pembayaran)"
+        label="Total kas masuk"
         :value="formatRupiah(saldo.masuk)"
         :icon="TrendingUp"
         tone="green"
@@ -141,10 +150,10 @@ const remove = async (e) => {
             </td>
             <td class="td text-right">
               <button
-                v-if="e.direction === 'out' && auth.isAdmin"
+                v-if="isManual(e) && auth.isAdmin"
                 type="button"
                 class="btn btn-ghost btn-sm text-red-600"
-                aria-label="Hapus pengeluaran"
+                aria-label="Hapus catatan"
                 @click="remove(e)"
               >
                 <Trash2 class="h-3.5 w-3.5" aria-hidden="true" />
@@ -155,7 +164,11 @@ const remove = async (e) => {
       </table>
     </div>
 
-    <AppModal v-model="open" :title="`Catat pengeluaran ${info.title}`">
+    <AppModal
+      v-model="open"
+      :title="`Catat ${kind === 'in' ? 'pemasukan' : 'pengeluaran'} ${info.title}`"
+      :subtitle="kind === 'in' ? 'Untuk dana masuk dari sumber lain, di luar pembayaran tagihan.' : ''"
+    >
       <form id="expense-form" class="space-y-4" @submit.prevent="submit">
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -175,12 +188,12 @@ const remove = async (e) => {
           </div>
         </div>
         <div>
-          <FormLabel for="ex-cat">Kategori (opsional)</FormLabel>
+          <FormLabel for="ex-cat">{{ kind === 'in' ? 'Sumber dana (opsional)' : 'Kategori (opsional)' }}</FormLabel>
           <input
             id="ex-cat"
             v-model="form.category"
             class="input"
-            placeholder="mis. Perbaikan, Listrik"
+            :placeholder="kind === 'in' ? 'mis. Donasi, Bunga bank, Iuran khusus' : 'mis. Perbaikan, Listrik'"
           />
         </div>
         <div>

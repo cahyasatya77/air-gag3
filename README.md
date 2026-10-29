@@ -1,6 +1,6 @@
 # Pencatatan Air – Griya Asri Gadingan 3
 
-Backend: Node.js + Fastify + PostgreSQL (`src/`). Frontend: Vue 3 + Vite + Tailwind 4 + Pinia (`frontend/`), strukturnya mengikuti template di `docs/frontend.zip`.
+Backend: Node.js + Fastify + MySQL/MariaDB (`src/`). Frontend: Vue 3 + Vite + Tailwind 4 + Pinia (`frontend/`), strukturnya mengikuti template di `docs/frontend.zip`.
 
 ## Menjalankan
 1. `npm install`

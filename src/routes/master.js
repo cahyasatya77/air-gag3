@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { query, tx } from '../db/pool.js';
 import { audit } from '../services/audit.js';
 import { HttpError, assertPeriod, syncFlatBills } from '../services/billing.js';
+import { OPS_ROLES } from '../services/roles.js';
 
 import { normalizePhone } from '../services/whatsapp.js';
 
@@ -12,12 +13,12 @@ function checkedPhone(raw) {
   return p;
 }
 
-const ROLES = ['administrator', 'pengurus', 'pemilik'];
+const ROLES = ['administrator', 'pengurus', 'pengurus_jimpitan', 'pengurus_air', 'pemilik'];
 const STATUSES = ['normal', 'tidak_pakai', 'nonaktif'];
 
 export default async function (app) {
   const admin = app.auth('administrator');
-  const staff = app.auth('pengurus');
+  const staff = app.auth(...OPS_ROLES);
 
   // ---- Rumah ----
   app.get('/houses', { preHandler: staff }, async () => {
@@ -61,12 +62,9 @@ export default async function (app) {
 
   // ---- User ----
   app.get('/users', { preHandler: admin }, async () => {
-    const { rows } = await query(
-      `SELECT u.id,u.username,u.name,u.roles,u.active,
-         COALESCE((SELECT array_agg(no_rumah ORDER BY sort_no) FROM houses WHERE user_id=u.id),'{}') AS houses
-       FROM users u ORDER BY u.id`
-    );
-    return rows;
+    const { rows } = await query('SELECT id,username,name,roles,active FROM users ORDER BY id');
+    const hs = (await query('SELECT user_id, no_rumah FROM houses WHERE user_id IS NOT NULL ORDER BY sort_no')).rows;
+    return rows.map((u) => ({ ...u, houses: hs.filter((h) => h.user_id === u.id).map((h) => h.no_rumah) }));
   });
 
   app.post('/users', {
@@ -77,7 +75,7 @@ export default async function (app) {
     const user = await tx(async (db) => {
       const { rows } = await db.query(
         `INSERT INTO users (username,password_hash,name,roles) VALUES ($1,$2,$3,$4) RETURNING id,username,name,roles,active`,
-        [b.username.trim(), await bcrypt.hash(b.password, 10), b.name.trim(), b.roles]
+        [b.username.trim(), await bcrypt.hash(b.password, 10), b.name.trim(), JSON.stringify(b.roles)]
       );
       if (b.house_ids?.length) await db.query('UPDATE houses SET user_id=$1 WHERE id=ANY($2)', [rows[0].id, b.house_ids]);
       return rows[0];
@@ -101,7 +99,7 @@ export default async function (app) {
       const n = { ...before, ...b };
       const { rows } = await db.query(
         `UPDATE users SET name=$2,roles=$3,active=$4 WHERE id=$1 RETURNING id,username,name,roles,active`,
-        [id, n.name, n.roles, n.active]
+        [id, n.name, JSON.stringify(n.roles), n.active]
       );
       if (b.password) await db.query('UPDATE users SET password_hash=$2 WHERE id=$1', [id, await bcrypt.hash(b.password, 10)]);
       if (b.house_ids) {
@@ -132,11 +130,29 @@ export default async function (app) {
     return reply.code(201).send(rows[0]);
   });
 
+  // ---- Rekening bendahara (riwayat; yang terbaru berlaku) ----
+  app.get('/bank-accounts', { preHandler: staff }, async () => (await query(
+    `SELECT ba.*, u.username AS created_by_name FROM bank_accounts ba LEFT JOIN users u ON u.id=ba.created_by ORDER BY ba.id DESC`)).rows);
+
+  app.post('/bank-accounts', {
+    preHandler: admin,
+    schema: { body: { type: 'object', required: ['bank', 'account_no', 'holder'], properties: {
+      bank: { type: 'string', minLength: 2, maxLength: 60 }, account_no: { type: 'string', minLength: 4, maxLength: 40 }, holder: { type: 'string', minLength: 2, maxLength: 100 } } } },
+  }, async (req, reply) => {
+    const b = req.body;
+    const { rows } = await query(
+      'INSERT INTO bank_accounts (bank,account_no,holder,created_by) VALUES ($1,$2,$3,$4) RETURNING *',
+      [b.bank.trim(), b.account_no.trim(), b.holder.trim(), req.user.id]
+    );
+    await audit(req, 'tambah', 'bank_account', rows[0].id, null, rows[0]);
+    return reply.code(201).send(rows[0]);
+  });
+
   // ---- Audit log ----
   app.get('/audit', { preHandler: admin }, async (req) => {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const offset = Number(req.query.offset) || 0;
-    const { rows } = await query('SELECT * FROM audit_logs ORDER BY id DESC LIMIT $1 OFFSET $2', [limit, offset]);
+    const { rows } = await query('SELECT id,user_id,username,action,entity,entity_id,old_data AS `before`,new_data AS `after`,ip,created_at FROM audit_logs ORDER BY id DESC LIMIT $1 OFFSET $2', [limit, offset]);
     return rows;
   });
 }

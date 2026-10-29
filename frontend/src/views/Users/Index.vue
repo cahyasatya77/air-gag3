@@ -13,6 +13,8 @@ import PageHeader from '@/components/PageHeader.vue'
 const ROLES = {
   administrator: { label: 'Administrator', cls: 'badge-blue' },
   pengurus: { label: 'Pengurus', cls: 'badge-amber' },
+  pengurus_jimpitan: { label: 'Pengurus Jimpitan', cls: 'badge-amber' },
+  pengurus_air: { label: 'Pengurus Air', cls: 'badge-amber' },
   pemilik: { label: 'Pemilik rumah', cls: 'badge-gray' },
 }
 

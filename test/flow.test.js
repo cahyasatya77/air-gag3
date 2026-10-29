@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/pencatatan_air_test';
+process.env.DATABASE_URL = 'mysql://root:@localhost:3306/pencatatan_air_test';
 process.env.JWT_SECRET = 'test-secret';
 
 const { calcAmount } = await import('../src/services/billing.js');
@@ -22,10 +22,14 @@ test('rumus tagihan', () => {
 
 test('alur pencatatan, justifikasi, pembayaran, kas', async (t) => {
   await migrate();
-  await pool.query('TRUNCATE users,houses,tariffs,bills,adjustments,payments,cash_entries,audit_logs RESTART IDENTITY CASCADE');
+  const c = await pool.raw.getConnection();
+  await c.query('SET FOREIGN_KEY_CHECKS=0');
+  for (const tb of ['users', 'houses', 'periods', 'tariffs', 'bills', 'adjustments', 'payments', 'cash_entries', 'audit_logs', 'bank_accounts', 'meeting_note_points', 'meeting_notes']) await c.query(`TRUNCATE ${tb}`);
+  await c.query('SET FOREIGN_KEY_CHECKS=1');
+  c.release();
   const hash = await bcrypt.hash('password123', 4);
   await pool.query(
-    `INSERT INTO users (username,password_hash,name,roles) VALUES ('adm',$1,'Adm',ARRAY['administrator']),('pgs',$1,'Pgs',ARRAY['pengurus']),('own',$1,'Own',ARRAY['pemilik'])`, [hash]);
+    `INSERT INTO users (username,password_hash,name,roles) VALUES ('adm',$1,'Adm','["administrator"]'),('pgs',$1,'Pgs','["pengurus"]'),('own',$1,'Own','["pemilik"]')`, [hash]);
   await pool.query(`INSERT INTO tariffs (effective_from,abodemen_m3,abodemen_nominal,tambahan_per_m3,flat_nominal,kas_jimpitan) VALUES ('2026-01',15,25000,1000,10000,10000)`);
   await pool.query(`INSERT INTO houses (no_rumah,sort_no,owner_name,status,user_id) VALUES ('A1',1,'Budi','normal',3),('A2',2,'Siti','tidak_pakai',NULL),('A3',3,'Ani','normal',NULL)`);
   await pool.query(`INSERT INTO bills (house_id,period,meter_awal) VALUES (1,'2026-10',100),(3,'2026-10',50),(2,'2026-10',5)`); // A2 flat tapi tagihannya sempat dibuat sebagai meteran
@@ -46,15 +50,34 @@ test('alur pencatatan, justifikasi, pembayaran, kas', async (t) => {
   assert.equal((await own('GET', '/api/houses')).statusCode, 403);
   assert.equal((await pgs('GET', '/api/users')).statusCode, 403);
 
-  // daftar periode: rumah flat otomatis ditagih 10.000
+  // periode dibuat manual: sebelum dibuat tidak ada tagihan & tidak terbuat otomatis
+  assert.deepEqual((await pgs('GET', '/api/periods/2026-10/bills')).json(), []);
+  assert.deepEqual((await pgs('GET', '/api/periods')).json(), []);
+  assert.equal((await own('POST', '/api/periods/2026-10/generate')).statusCode, 403);
+  await pool.query(`INSERT INTO users (username,password_hash,name,roles) VALUES ('pjtest',$1,'PJ','["pengurus_jimpitan"]')`, [hash]);
+  const pjt = as(await login('pjtest'));
+  assert.equal((await pjt('POST', '/api/periods/2026-10/generate')).statusCode, 403); // pengurus jimpitan tidak boleh
+  assert.equal((await pgs('POST', '/api/periods/2026-10/generate')).statusCode, 201);
+  assert.equal((await pgs('POST', '/api/periods/2026-10/generate')).statusCode, 409); // bulan-tahun sama
+  assert.equal((await pgs('POST', '/api/periods/2026-12/generate')).statusCode, 409); // melompat, harus urut
+  assert.equal((await pgs('POST', '/api/periods/2026-09/generate')).statusCode, 409); // mundur
+  assert.deepEqual((await pgs('GET', '/api/periods')).json(), ['2026-10']);
+
+  // rumah flat otomatis ditagih 10.000
   const bills = (await pgs('GET', '/api/periods/2026-10/bills')).json();
   const b = (no) => bills.find((x) => x.no_rumah === no);
   assert.equal(b('A2').amount, 10000);
 
   // catat meter: 100 -> 120 = 20 m3 => 25.000 + 5.000
   let r = await pgs('PUT', `/api/bills/${b('A1').id}/reading`, { meter_akhir: 120 });
+  // sudah terisi: tidak bisa ditimpa langsung, harus lewat update (konfirmasi di UI)
+  assert.equal((await pgs('PUT', `/api/bills/${b('A1').id}/reading`, { meter_akhir: 130 })).statusCode, 409);
+  assert.equal((await pgs('PUT', `/api/bills/${b('A1').id}/reading`, { meter_akhir: 130, update: true })).statusCode, 200);
+  r = await pgs('PUT', `/api/bills/${b('A1').id}/reading`, { meter_akhir: 120, update: true });
   assert.equal(r.json().amount, 30000);
-  // meter awal periode berikutnya otomatis = meter akhir
+  // periode berikutnya tidak terbentuk otomatis; setelah dibuat, meter awal = meter akhir
+  assert.deepEqual((await pgs('GET', '/api/periods/2026-11/bills')).json(), []);
+  assert.equal((await pgs('POST', '/api/periods/2026-11/generate')).statusCode, 201);
   const nov = (await pgs('GET', '/api/periods/2026-11/bills')).json();
   assert.equal(nov.find((x) => x.no_rumah === 'A1').meter_awal, 120);
 
@@ -149,6 +172,58 @@ test('alur pencatatan, justifikasi, pembayaran, kas', async (t) => {
   assert.equal((await m('GET', '/api/my/bills')).statusCode, 200); // peran pemilik
   assert.equal((await m('GET', '/api/receivables')).statusCode, 200); // peran pengurus
   assert.equal((await m('GET', '/api/users')).statusCode, 403); // bukan administrator
+
+  // pengurus jimpitan / air: pencatatan & tagihan + kas dananya saja
+  assert.equal((await adm('POST', '/api/users', { username: 'pjimpitan', password: 'password123', name: 'PJ', roles: ['pengurus_jimpitan'] })).statusCode, 201);
+  assert.equal((await adm('POST', '/api/users', { username: 'pair', password: 'password123', name: 'PA', roles: ['pengurus_air'] })).statusCode, 201);
+  const pj = as(await login('pjimpitan'));
+  const pa = as(await login('pair'));
+  for (const u of [pj, pa]) {
+    assert.equal((await u('GET', '/api/periods/2026-10/bills')).statusCode, 200);
+    assert.equal((await u('GET', '/api/receivables')).statusCode, 200);
+    assert.equal((await u('GET', '/api/users')).statusCode, 403);
+  }
+  assert.equal((await pj('GET', '/api/cash?fund=jimpitan')).statusCode, 200);
+  assert.equal((await pj('GET', '/api/cash?fund=air')).statusCode, 403);
+  assert.deepEqual(Object.keys((await pj('GET', '/api/cash')).json().saldo), ['jimpitan']);
+  assert.deepEqual(Object.keys((await pa('GET', '/api/cash')).json().saldo), ['air']);
+  assert.equal((await pj('POST', '/api/expenses', { fund: 'jimpitan', amount: 1000, description: 'x' })).statusCode, 201);
+  assert.equal((await pj('POST', '/api/expenses', { fund: 'air', amount: 1000, description: 'x' })).statusCode, 403);
+  assert.equal((await pa('POST', '/api/expenses', { fund: 'air', amount: 1000, description: 'x' })).statusCode, 201);
+  // pemasukan manual dari sumber lain
+  assert.equal((await pj('POST', '/api/incomes', { fund: 'air', amount: 1000, description: 'x' })).statusCode, 403);
+  const inc = await pa('POST', '/api/incomes', { fund: 'air', amount: 7000, category: 'Donasi', description: 'Donasi warga' });
+  assert.equal(inc.statusCode, 201);
+  assert.equal(inc.json().direction, 'in');
+  assert.equal(inc.json().payment_id, null);
+  const incRep = (await pa('GET', '/api/reports/kas/air')).json().months.find((m) => m.incomes.length);
+  assert.equal(incRep.incomes[0].description, 'Donasi warga');
+  assert.equal(incRep.masuk_lain, 7000);
+  assert.equal(incRep.masuk, incRep.masuk_pembayaran + 7000);
+  assert.equal((await adm('DELETE', `/api/cash-entries/${inc.json().id}`)).statusCode, 200);
+  assert.equal((await adm('DELETE', `/api/cash-entries/${inc.json().id}`)).statusCode, 404);
+
+  // notulen: admin & pengurus menulis, semua pengguna login membaca, HTML disanitasi
+  const note = { title: 'Notulensi 24/10/2026', meeting_date: '2026-10-24', location: 'Fasum', points: [
+    { title: 'Retribusi air', content: '<ul><li>Normal meteran</li></ul><script>alert(1)</script><a href="javascript:alert(2)" onclick="x()">klik</a>' },
+    { title: 'Struktur organisasi', content: '<p><strong>Ketua</strong>: Cahya</p>' }] };
+  assert.equal((await own('POST', '/api/notes', note)).statusCode, 403);
+  assert.equal((await pj('POST', '/api/notes', note)).statusCode, 403);
+  assert.equal((await pgs('POST', '/api/notes', { ...note, points: [] })).statusCode, 400);
+  r = await pgs('POST', '/api/notes', note);
+  assert.equal(r.statusCode, 201);
+  const nid = r.json().id;
+  assert.equal(r.json().points.length, 2);
+  assert.ok(!/script|javascript|onclick/i.test(r.json().points[0].content));
+  assert.match(r.json().points[0].content, /<li>Normal meteran<\/li>/);
+  assert.equal((await own('GET', '/api/notes')).json()[0].point_count, 2);
+  assert.equal((await own('GET', `/api/notes/${nid}`)).json().points[1].title, 'Struktur organisasi');
+  assert.equal((await own('GET', '/api/notes/9999')).statusCode, 404);
+  r = await adm('PUT', `/api/notes/${nid}`, { ...note, points: [note.points[1]] });
+  assert.equal(r.json().points.length, 1);
+  assert.equal((await pgs('DELETE', `/api/notes/${nid}`)).statusCode, 403);
+  assert.equal((await adm('DELETE', `/api/notes/${nid}`)).statusCode, 200);
+  assert.deepEqual((await own('GET', '/api/notes')).json(), []);
 
   // PDF
   r = await pgs('GET', '/api/periods/2026-10/report.pdf');

@@ -12,6 +12,7 @@ import masterRoutes from './routes/master.js';
 import billingRoutes from './routes/billing.js';
 import cashRoutes from './routes/cash.js';
 import reportRoutes from './routes/reports.js';
+import noteRoutes from './routes/notes.js';
 
 export async function buildApp(opts = {}) {
   const app = Fastify({ logger: opts.logger ?? false, trustProxy: true });
@@ -37,7 +38,7 @@ export async function buildApp(opts = {}) {
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof HttpError) return reply.code(err.status).send({ error: err.message });
-    if (err.code === '23505') return reply.code(409).send({ error: 'Data sudah ada (duplikat)' });
+    if (err.code === 'ER_DUP_ENTRY') return reply.code(409).send({ error: 'Data sudah ada (duplikat)' });
     if (err.validation || err.statusCode < 500) return reply.code(err.statusCode || 400).send({ error: err.message });
     req.log.error(err);
     return reply.code(500).send({ error: 'Terjadi kesalahan pada server' });
@@ -48,6 +49,7 @@ export async function buildApp(opts = {}) {
   await app.register(billingRoutes, { prefix: '/api' });
   await app.register(cashRoutes, { prefix: '/api' });
   await app.register(reportRoutes, { prefix: '/api' });
+  await app.register(noteRoutes, { prefix: '/api' });
 
   // Frontend (Vue) hasil build: frontend/dist. Rute non-API dikembalikan ke index.html (SPA).
   const root = fileURLToPath(new URL('../frontend/dist', import.meta.url));

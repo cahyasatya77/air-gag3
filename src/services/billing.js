@@ -11,9 +11,8 @@ export const assertPeriod = (p) => {
   return p;
 };
 
-// Awal pencatatan di sistem ini (periode sebelumnya tidak dibuat/ditagih). Atur lewat START_PERIOD di .env
-export const START_PERIOD = process.env.START_PERIOD || '2026-10';
-export const beforeStart = (period) => period < START_PERIOD;
+const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+export const periodLabel = (p) => `${BULAN[Number(p.slice(5)) - 1]} ${p.slice(0, 4)}`;
 
 export function shiftPeriod(period, delta) {
   const [y, m] = period.split('-').map(Number);
@@ -48,10 +47,27 @@ async function carryOver(db, houseId, period) {
   return prev.meter_awal_next ?? prev.meter_akhir;
 }
 
+/**
+ * Buat periode baru (manual oleh pengurus): daftarkan periode lalu buat tagihan semua rumah aktif.
+ * Periode pertama bebas dipilih; sesudahnya harus berurutan (bulan tepat setelah periode terbaru),
+ * dan bulan-tahun yang sama tidak boleh dibuat dua kali.
+ */
+export async function createPeriod(db, period, userId) {
+  assertPeriod(period);
+  const { rows } = await db.query('SELECT period FROM periods ORDER BY period DESC');
+  if (rows.some((r) => r.period === period)) throw new HttpError(409, `Periode ${periodLabel(period)} sudah dibuat`);
+  if (rows.length) {
+    const next = shiftPeriod(rows[0].period, 1);
+    if (period !== next) throw new HttpError(409, `Periode harus berurutan: setelah ${periodLabel(rows[0].period)} berikutnya adalah ${periodLabel(next)}`);
+  }
+  const ins = await db.query('INSERT INTO periods (period, created_by) VALUES ($1,$2) ON CONFLICT DO NOTHING', [period, userId]);
+  if (!ins.rowCount) throw new HttpError(409, 'Periode ini sudah dibuat');
+  return generatePeriod(db, period);
+}
+
 /** Buat baris tagihan untuk semua rumah aktif pada satu periode (idempoten). */
 export async function generatePeriod(db, period) {
   assertPeriod(period);
-  if (beforeStart(period)) throw new HttpError(409, `Pencatatan dimulai dari ${START_PERIOD}`);
   const tariff = await tariffFor(db, period);
   const { rows: houses } = await db.query("SELECT * FROM houses WHERE status <> 'nonaktif'");
   let created = 0;
@@ -103,23 +119,21 @@ export async function syncFlatBills(db, { period = null, houseId = null } = {}) 
   return rows.length;
 }
 
+// Meter awal periode berikutnya ikut diperbarui bila periodenya sudah dibuat; periode tidak dibuat otomatis.
 async function ensureNext(db, bill, awalNext) {
-  const next = shiftPeriod(bill.period, 1);
   await db.query(
-    `INSERT INTO bills (house_id, period, meter_awal, flat)
-     SELECT $1,$2,$3,(h.status='tidak_pakai') FROM houses h WHERE h.id=$1 AND h.status<>'nonaktif'
-     ON CONFLICT (house_id, period) DO UPDATE SET meter_awal = EXCLUDED.meter_awal
-       WHERE bills.meter_akhir IS NULL AND NOT bills.flat`,
-    [bill.house_id, next, awalNext]
+    `UPDATE bills SET meter_awal=$3 WHERE house_id=$1 AND period=$2 AND meter_akhir IS NULL AND NOT flat`,
+    [bill.house_id, shiftPeriod(bill.period, 1), awalNext]
   );
 }
 
 /** Catat meter akhir. Meter akhir < awal wajib lewat justifikasi (ganti/rusak). */
-export async function recordReading(db, { billId, meterAkhir, userId }) {
+export async function recordReading(db, { billId, meterAkhir, userId, update = false }) {
   const { rows } = await db.query('SELECT * FROM bills WHERE id=$1 FOR UPDATE', [billId]);
   const bill = rows[0];
   if (!bill) throw new HttpError(404, 'Tagihan tidak ditemukan');
   if (bill.flat) throw new HttpError(409, 'Rumah ini bayar flat, tidak perlu pencatatan meteran');
+  if (bill.meter_akhir !== null && !update) throw new HttpError(409, 'Meter akhir sudah diisi. Untuk mengubahnya gunakan tombol Update');
   if (!Number.isFinite(meterAkhir) || meterAkhir < 0) throw new HttpError(400, 'Meter akhir tidak valid');
   const paid = await paidSum(db, billId);
   if (paid > 0) throw new HttpError(409, 'Tagihan sudah ada pembayaran, tidak bisa diubah');
@@ -191,7 +205,7 @@ export async function paidSum(db, billId) {
 }
 
 /** Catat pembayaran dan bagi otomatis ke kas jimpitan (maks. kas_jimpitan per tagihan) & kas air. */
-export async function recordPayment(db, { billId, amount, paidAt, note, userId }) {
+export async function recordPayment(db, { billId, amount, paidAt, note, method, userId }) {
   const { rows } = await db.query('SELECT * FROM bills WHERE id=$1 FOR UPDATE', [billId]);
   const bill = rows[0];
   if (!bill) throw new HttpError(404, 'Tagihan tidak ditemukan');
@@ -204,9 +218,9 @@ export async function recordPayment(db, { billId, amount, paidAt, note, userId }
     : await tariffFor(db, bill.period);
   const pay = (
     await db.query(
-      `INSERT INTO payments (bill_id,amount,paid_at,note,received_by)
-       VALUES ($1,$2,COALESCE($3::date,CURRENT_DATE),$4,$5) RETURNING *`,
-      [billId, amount, paidAt || null, note || '', userId]
+      `INSERT INTO payments (bill_id,amount,paid_at,note,method,received_by)
+       VALUES ($1,$2,COALESCE($3::date,CURRENT_DATE),$4,$5,$6) RETURNING *`,
+      [billId, amount, paidAt || null, note || '', method || 'tunai', userId]
     )
   ).rows[0];
   const jimpitanDone = Math.min(paid, tariff.kas_jimpitan);

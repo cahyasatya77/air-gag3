@@ -15,13 +15,13 @@ const out = await tx(async (db) => {
     const roles = ADMIN_HOUSES.includes(h.no_rumah) ? ['administrator', 'pengurus', 'pemilik'] : ['pemilik'];
     const u = await db.query(
       `INSERT INTO users (username,password_hash,name,roles) VALUES ($1,$2,$3,$4) ON CONFLICT (username) DO NOTHING RETURNING id`,
-      [h.no_rumah.toLowerCase(), hash, h.owner_name || h.no_rumah, roles]
+      [h.no_rumah.toLowerCase(), hash, h.owner_name || h.no_rumah, JSON.stringify(roles)]
     );
     if (!u.rowCount) continue;
     await db.query('UPDATE houses SET user_id=$1 WHERE id=$2', [u.rows[0].id, h.id]);
     made.push({ no: h.no_rumah, roles });
   }
-  await db.query(`INSERT INTO audit_logs (username,action,entity,after) VALUES ('sistem','buat_akun_massal','user',$1)`, [JSON.stringify({ jumlah: made.length })]);
+  await db.query(`INSERT INTO audit_logs (username,action,entity,new_data) VALUES ('sistem','buat_akun_massal','user',$1)`, [JSON.stringify({ jumlah: made.length })]);
   return made;
 });
 console.log(`${out.length} akun dibuat. Administrator: ${out.filter((m) => m.roles.includes('administrator')).map((m) => m.no).join(', ') || '-'}`);
